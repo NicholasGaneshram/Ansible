@@ -1,0 +1,71 @@
+---
+# Purpose of this playbook is to perform a weekly check for updating hosts in my homelab.
+# This playbook is initiated by a crontab job.
+
+- name: "RHEL Kernel Upgrade"
+  hosts: all
+  gather_facts: no
+  strategy: free
+  tasks:
+
+    # Clean the local package cache on the system
+    - name: "Clean Package Cache"
+      shell: "yum clean all"
+      args:
+        executable: /bin/bash
+        warn: false
+
+    # Update to the latest kernel and patch level
+    # Retry up to 3 times, with 10-second intervals (in the case of network disruptions)
+    - name: "Update Packages"
+      yum:
+        name: '*'
+        state: latest
+      register: yum_output
+      until: yum_output is succeeded
+      retries: 3
+      delay: 10
+
+    # Check if the host needs to be rebooted
+    # Using a bash statement to detect if a new kernel needs to be loaded on boot
+    - name: "Check if host needs to be rebooted"
+      shell: |
+        if [ $(rpm -q --last kernel | awk 'NR==1 {print $1}') != kernel-$(uname -r) ]; then echo 'reboot_needed'; else echo 'Kernel is current'; fi
+      register: kernel_check
+      changed_when: false
+      ignore_errors: true
+
+    # Schedule a reboot for 1230am. reboot the host ONLY IF a new Kernel is detected
+    - name: "Schedule a reboot for 1230am"
+      shell: shutdown -r 00:30
+      args:
+        executable: /bin/bash
+        warn: false
+      when: '"reboot_needed" in kernel_check.stdout'
+
+    # # Alternatively if you prefer to reboot the host at the runtime of the playbook, you may use this block instead of the above play
+
+    # # Reboot the host ONLY IF a new Kernel is detected
+    # - name: "Reboot host if new Kernel is detected"
+    #   reboot:
+    #     msg: "Reboot initiated by Ansible playbook kernel_upgrade.yml"
+    #     connect_timeout: 5
+    #     reboot_timeout: 1800
+    #     pre_reboot_delay: 30
+    #     post_reboot_delay: 60
+    #     test_command: whoami
+    #   when: '"reboot_needed" in kernel_check.stdout'
+
+    # Send a webhook to your desired application (In this case im using a dedicated Discord Server), only when a reboot is needed
+    # {{ inventory_hostname }} is a built in ansible variable to output the hostname passed in your inventory file
+    # I'am passing in my discord_webook (probably best to encrypt the webhook using something like ansible-vault ;) )
+    - name: Send webhook
+      uri:
+        url: "{{ discord_webhook }}"
+        method: POST
+        body_format: json
+        body: '{"Reboot Scheduled": "{{ inventory_hostname }}"}'
+        status_code: 200  
+        headers:
+          Content-Type: "application/json"
+      when: '"reboot_needed" in kernel_check.stdout'
